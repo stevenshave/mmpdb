@@ -469,6 +469,7 @@ class FragDBWriter:
         engine, session = self.engine, self.session
         if session is not None:
             self.engine = self.session = None
+            fragment_types.create_indices(engine)
             session.commit() # don't rollback - keep partial writes too.
             engine.dispose()
 
@@ -608,7 +609,7 @@ def open_fragment_writer(filename, options, format_hint=None):
 
         engine = _open_engine(
             filename,
-            #echo = False,
+            #echo = True,
             )
         fragment_types.Base.metadata.create_all(engine)
         

@@ -35,6 +35,8 @@ from sqlalchemy import Column, Integer, String, ForeignKey
 from sqlalchemy.orm import registry
 from sqlalchemy.orm import relationship
 
+from sqlalchemy import Index
+
 mapper_registry = registry()
 Base = mapper_registry.generate_base()
 
@@ -80,7 +82,7 @@ class FragmentOptions(Base):
 class FragmentErrorRecord(Base):
     __tablename__ = "error_record"
     id = Column(Integer, primary_key=True)
-    title = Column(String(100), nullable=False, index=True)
+    title = Column(String(100), nullable=False) # , index=True
     input_smiles = Column(String(300), nullable=False)
     errmsg = Column(String(100))
 
@@ -93,7 +95,7 @@ class FragmentRecord(Base):
     errmsg = None # make it easier to test if this is a FragmentErrorRecord
     
     id  = Column(Integer, primary_key=True)
-    title = Column(String(50), nullable=False, index=True)
+    title = Column(String(50), nullable=False) # , index=True
     input_smiles = Column(String(400), nullable=False)
     num_normalized_heavies = Column(Integer)
     normalized_smiles = Column(String(350), nullable=False)
@@ -108,7 +110,7 @@ class FragmentRecord(Base):
 class Fragmentation(Base):
     __tablename__ = "fragmentation"
     id = Column(Integer, primary_key=True)
-    record_id = Column(Integer, ForeignKey("record.id"), index=True)
+    record_id = Column(Integer, ForeignKey("record.id")) # , index=True
     num_cuts = Column(Integer)
     enumeration_label = Column(String(1), nullable=False)
     variable_num_heavies = Column(Integer)
@@ -161,3 +163,16 @@ class FragmentFormatError(ValueError):
     
     def __str__(self):
         return "%s, %s" % (self.reason, self.location.where())
+
+def create_indices(engine):
+    # CREATE INDEX ix_error_record_title ON error_record (title);
+    index1 = Index("ix_error_record_title", FragmentErrorRecord.title)
+    
+    # CREATE INDEX ix_record_title ON record (title);
+    index2 = Index("ix_record_title", FragmentRecord.title)
+    
+    # CREATE INDEX ix_fragmentation_record_id ON fragmentation (record_id);
+    index3 = Index("ix_fragmentation_record_id", Fragmentation.record_id)
+
+    for index in (index1, index2, index3):
+        index.create(bind=engine)
