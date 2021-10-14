@@ -37,7 +37,6 @@ import json
 import re
 import itertools
 import os
-import sqlite3
 
 from . import __version__ as mmpdblib_version
 
@@ -45,9 +44,16 @@ from . import config
 from . import fileio
 from . import fragment_algorithm
 from . import reporters
-from .fragment_types import FragmentRecord, FragmentErrorRecord, FragmentFormatError
+
+from .fragment_types import (
+    FragmentRecord,
+    FragmentErrorRecord,
+    FragmentFormatError,
+    Fragmentation,
+    )
 from ._compat import basestring
-from . import schema
+
+from . import fragment_types
 
 SOFTWARE = "mmpdb-" + mmpdblib_version
 
@@ -266,7 +272,6 @@ def _read_fragment_records(line_reader, close, location, options_dict):
                       )
     
     loads = get_json_loads()
-    Fragmentation = fragment_algorithm.Fragmentation
     yield "ready"
     try:
         for lineno, line in line_reader:
@@ -451,64 +456,21 @@ def relabel(smiles, order=None):
 
     return _wildcard_pat.sub(add_isotope_tag_to_wildcard, smiles)
 
-#### SQLite-based fragment file
-
-SCHEMA_FILENAME = os.path.join(os.path.dirname(__file__), "fragment_schema.sql")
-_schema_template = None    
-def get_schema_template():
-    global _schema_template
-    if _schema_template is None:
-        with open(SCHEMA_FILENAME) as infile:
-            _schema_template = infile.read()
-    return _schema_template
-
-def init_fragdb(c, options):
-    # Ensure SQL can read the file, and that no records exist
-    try:
-        c.execute("SELECT count(*) FROM record")
-    except sqlite3.OperationalError as err:
-        if "no such table: record" in str(err):
-            pass
-        else:
-            raise
-    else:
-        raise AssertionError("I tried to delete the fragdb file but apparently it's valid?!")
-
-    # To try:
-    #  c.execute("PRAGMA journal_mode=WAL")
-    #  c.execute("PRAGMA synchronous=off")
-    # My WAL attempt left a couple of temp files in the local directory.
-    # Perhaps I didn't close things?
-    
-    # Create the schema
-    schema._execute_sql(c, get_schema_template())
-
-    c.execute("""
-INSERT INTO config(version, cut_smarts, max_heavies, max_rotatable_bonds,
-                   method, num_cuts, rotatable_smarts,
-                   salt_remover, min_heavies_per_const_frag)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-""", (3, options.cut_smarts, options.max_heavies, options.max_rotatable_bonds,
-          options.method, options.num_cuts, options.rotatable_smarts,
-          options.salt_remover, options.min_heavies_per_const_frag))
-    
-
+#### SQLAlchemy-based fragment file
     
 class FragDBWriter:
-    def __init__(self, filename, db, c, options):
+    def __init__(self, filename, options, engine, session):
         self.filename = filename
-        self.db = db
-        self.c = c
-        self._record_id = 0 # Manage the record ids myself
+        #self.options = options
+        self.engine = engine
+        self.session = session
 
     def close(self):
-        db, c = self.db, self.c
-        if db is not None:
-            c.execute("CREATE INDEX fragmentation_on_record_id ON fragmentation(record_id)")
-            self.db = self.c = None
-            c.close()
-            db.commit()  # don't rollback - keep partial writes too.
-            db.close()
+        engine, session = self.engine, self.session
+        if session is not None:
+            self.engine = self.session = None
+            session.commit() # don't rollback - keep partial writes too.
+            engine.dispose()
 
     def __enter__(self):
         return self
@@ -523,92 +485,75 @@ class FragDBWriter:
         raise NotImplementedError("cannot add options twice")
 
     def write_records(self, fragment_records):
-        c = self.c
+        session = self.session
         for rec in fragment_records:
-            if rec.errmsg:
-                c.execute("""
-INSERT INTO error_record (title, input_smiles, errmsg)
-                  VALUES (?, ?, ?)""",
-                  (rec.id, rec.input_smiles, rec.errmsg))
-                continue
+            session.add(rec)
 
-            self._record_id = record_id = self._record_id + 1
+
+def _sqlite_pragma_on_connect(dbapi_con, con_record):
+    dbapi_con.execute("pragma synchronous=OFF")
+
+
+def _open_engine(filename, echo=False):
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import URL
+    from sqlalchemy import event
+    
+    url = URL.create(
+        drivername = "sqlite+pysqlite",
+        database = filename,
+        )
+    engine = create_engine(
+        url,
+        echo = echo,
+        future=True)
+    event.listen(engine, "connect", _sqlite_pragma_on_connect)
+    
+    return engine
             
-            c.execute("""
-INSERT INTO record (id, title, input_smiles, num_normalized_heavies, normalized_smiles)
-            VALUES (?, ?, ?, ?, ?)""",
-           (record_id, rec.id, rec.input_smiles, rec.num_normalized_heavies, rec.normalized_smiles))
-
-            # XXX Is this sort still needed?
-            fragmentations = sorted(rec.fragments, key = get_fragment_sort_key)
-
-            for frag in fragmentations:
-                c.execute("""
-INSERT INTO fragmentation (record_id, num_cuts, enumeration_label,
-                           variable_num_heavies, variable_symmetry_class, variable_smiles,
-                           attachment_order, constant_num_heavies, constant_symmetry_class,
-                           constant_smiles, constant_with_H_smiles) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                   (record_id, frag.num_cuts, frag.enumeration_label,
-                    frag.variable_num_heavies, frag.variable_symmetry_class, frag.variable_smiles,
-                    frag.attachment_order, frag.constant_num_heavies, frag.constant_symmetry_class,
-                    frag.constant_smiles, frag.constant_with_H_smiles))
-
-def _get_fragdb_options(c):
-    try:
-        c.execute("SELECT count(*) FROM record")
-    except sqlite3.OperationalError as err:
-        raise ValueError(f"{filename!r} does not appear to be a fragdb file: {err}")
-
-    fields = [
-        "cut_smarts", "max_heavies", "max_rotatable_bonds",
-        "method", "num_cuts", "rotatable_smarts",
-        "salt_remover", "min_heavies_per_const_frag",
-        ]
-    field_str = ", ".join(f'"{name}"' for name in fields)
-    try:
-        c.execute(f"""
-SELECT version, {field_str}
-  FROM config
-        """)
-    except sqlite3.OperationalError as err:
-        raise ValueError(f"{filename!r} does not appear to be a fragdb file: {err}")
-
-    version, *field_values = next(c)
-    if version != 3:
-        raise ValueError(f"{filename!r} is a version {version} fragdb database. Only version 2 is supported.")
-
-    kwargs = dict(zip(fields, field_values))
-    return config.FragmentOptions(**kwargs)
-                
 def _load_fragdb(filename):
-    db = sqlite3.connect(filename)
-    c = db.cursor()
-    options = _get_fragdb_options(c)
-    return FragDB(None, options, db, c)
+    engine = _open_engine(filename)
+
+    from sqlalchemy.orm import Session
+    from sqlalchemy.exc import DatabaseError
+    session = Session(engine)
+    try:
+        options = session.query(fragment_types.FragmentOptions).one()
+    except DatabaseError:
+        raise ValueError(f"File {filename!r} does not appear to be a fragdb database")
+    session.expunge(options)
+    return FragDB(None, options, engine, session)
 
 class FragDB:
-    def __init__(self, metadata, options, db, c):
+    def __init__(self, metadata, options, engine, session):
         self.metadata = metadata
-        self.db = db
-        self.c = c
         self.options = options
+        self.engine = engine
+        self.session = session
 
     def get(self, title):
-        x = _get_one_or_none(self.c.execute("""
-SELECT id, title, input_smiles, num_normalized_heavies, normalized_smiles
-  FROM record
- WHERE title = ?""", (title,)))
-        if x is not None:
-            1/0
-
-        x = _get_one_or_none(self.c.execute("""
-SELECT id, title, input_smiles, errmsg
-  FROM error_record
- WHERE title = ?""", (title,)))
-        if x is not None:
-            2/0
-
+        from sqlalchemy import select
+        from sqlalchemy.orm import contains_eager
+        session = self.session
+        stmt = (
+            select(fragment_types.FragmentRecord)
+            .where(fragment_types.FragmentRecord.title == title)
+            .execution_options(populate_existing=True)
+            )
+        obj = session.execute(stmt).first()
+        if obj is not None:
+            rec = obj[0]
+            session.expunge(rec)
+            return rec
+        stmt = (
+            select(fragment_types.FragmentErrorRecord)
+            .where(fragment_types.FragmentErrorRecord.title == title)
+            )
+        obj = session.execute(stmt).first()
+        if obj is not None:
+            rec = obj[0]
+            session.expunge(rec)
+            return rec
         return None
 
     def __enter__(self):
@@ -618,56 +563,18 @@ SELECT id, title, input_smiles, errmsg
         self.close()
 
     def close(self):
-        c, db = self.c, self.db
-        if self.c is not None:
-            self.c = self.db = None
-            c.close()
-            db.rollback()
+        engine, session = self.engine, self.session
+        if session is not None:
+            self.engine = self.session = None
+            session.close()
+            engine.dispose()
 
     def __iter__(self):
-        record_c = self.db.cursor()
-        fragment_c = self.db.cursor()
-        # Ignore the errors
-        record_c.execute("""
-SELECT id, title, input_smiles, num_normalized_heavies, normalized_smiles
-  FROM record
-        """)
-        for (record_id, record_title, input_smiles, num_normalized_heavies,
-                 normalized_smiles) in record_c:
-            fragment_c.execute("""
-SELECT num_cuts, enumeration_label,
-       variable_num_heavies, variable_symmetry_class, variable_smiles,
-       attachment_order,
-       constant_num_heavies, constant_symmetry_class, constant_smiles,
-       constant_with_H_smiles
-  FROM fragmentation
- WHERE fragmentation.record_id = ?
-""", (record_id,))
-            fragmentations = []
-            for (num_cuts, enumeration_label,
-                 variable_num_heavies, variable_symmetry_class, variable_smiles,
-                 attachment_order,
-                 constant_num_heavies, constant_symmetry_class, constant_smiles,
-                 constant_with_H_smiles) in fragment_c:
-                fragmentations.append(fragment_algorithm.Fragmentation(
-                    num_cuts = num_cuts,
-                    enumeration_label = enumeration_label,
-                    variable_num_heavies = variable_num_heavies,
-                    variable_symmetry_class = variable_symmetry_class,
-                    variable_smiles = variable_smiles,
-                    attachment_order = attachment_order,
-                    constant_num_heavies = constant_num_heavies,
-                    constant_symmetry_class = constant_symmetry_class,
-                    constant_smiles = constant_smiles,
-                    constant_with_H_smiles = constant_with_H_smiles,
-                    ))
-            yield FragmentRecord(
-                id = record_title,
-                input_smiles = input_smiles,
-                num_normalized_heavies = num_normalized_heavies,
-                normalized_smiles = normalized_smiles,
-                fragments = fragmentations,
-                )
+        from sqlalchemy import select
+        session = self.session
+        for row in session.execute(select(fragment_types.FragmentRecord)):
+            yield row[0]
+            
     
 ### Dispatch to the correct writer
 
@@ -698,10 +605,18 @@ def open_fragment_writer(filename, options, format_hint=None):
             os.unlink(filename)
         except FileNotFoundError:
             pass
-        db = sqlite3.connect(filename)
-        c = db.cursor()
-        writer = FragDBWriter(filename, db, c, options)
-        init_fragdb(c, options)
+
+        engine = _open_engine(
+            filename,
+            #echo = False,
+            )
+        fragment_types.Base.metadata.create_all(engine)
+        
+        from sqlalchemy.orm import Session
+        session = Session(engine)
+
+        writer = FragDBWriter(filename, options, engine, session)
+        session.add(options)
         return writer
 
     # FragInfoWRiter and FragmentWriter but not FragDB

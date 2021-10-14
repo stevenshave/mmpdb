@@ -38,6 +38,9 @@ from rdkit import Chem
 import itertools
 from . import smiles_syntax  # for validation
 
+from . import fragment_types
+from .fragment_types import Fragmentation
+
 #####
 
 
@@ -46,38 +49,6 @@ class EnumerationLabel(object):
     CONSTANT_UP_ENUMERATION = "C"
     VARIABLE_UP_ENUMERATION = "V"
 
-
-class Fragmentation(object):
-    __slots__ = ("num_cuts", "enumeration_label",
-                 "variable_num_heavies", "variable_symmetry_class", "variable_smiles",
-                 "attachment_order",
-                 "constant_num_heavies", "constant_symmetry_class", "constant_smiles", "constant_with_H_smiles")
-    def __init__(self,
-                 num_cuts, enumeration_label,
-                 variable_num_heavies, variable_symmetry_class, variable_smiles,
-                 attachment_order,
-                 constant_num_heavies, constant_symmetry_class, constant_smiles, constant_with_H_smiles):
-        self.num_cuts = num_cuts
-        self.enumeration_label = enumeration_label
-        self.variable_num_heavies = variable_num_heavies
-        self.variable_symmetry_class = variable_symmetry_class
-        self.variable_smiles = variable_smiles
-        self.attachment_order = attachment_order
-        self.constant_num_heavies = constant_num_heavies
-        self.constant_symmetry_class = constant_symmetry_class
-        self.constant_smiles = constant_smiles
-        self.constant_with_H_smiles = constant_with_H_smiles
-
-    def __repr__(self):
-        return ("Fragmentation({self.num_cuts}, {self.enumeration_label!r}, "
-                "{self.variable_num_heavies}, {self.variable_symmetry_class!r}, {self.variable_smiles!r}, "
-                "{self.attachment_order!r}, "
-                "{self.constant_num_heavies}, {self.constant_symmetry_class!r}, "
-                "{self.constant_smiles!r}, {self.constant_with_H_smiles!r})").format(
-                    self=self)
-
-    def get_unique_key(self):
-        return "%s.%s.%s" % (self.attachment_order, self.variable_smiles, self.constant_smiles)
 
 
 #####
@@ -384,25 +355,49 @@ def make_single_cut(mol, atom_pair, chiral_flags, fragment_filter):
         if constant_num_atoms < fragment_filter.min_heavies_per_const_frag:
             continue
         
-        constant_smiles_with_H = replace_wildcard_with_H(constant_smiles)
-        yield Fragmentation(1, EnumerationLabel.NO_ENUMERATION,
-                            variable_num_atoms, "1", variable_smiles,
-                            "0",
-                            constant_num_atoms, "1", constant_smiles, constant_smiles_with_H)
+        constant_with_H_smiles = replace_wildcard_with_H(constant_smiles)
+        yield Fragmentation(
+            num_cuts = 1,
+            enumeration_label = EnumerationLabel.NO_ENUMERATION,
+            variable_num_heavies = variable_num_atoms,
+            variable_symmetry_class = "1",
+            variable_smiles = variable_smiles,
+            attachment_order = "0",
+            constant_num_heavies = constant_num_atoms,
+            constant_symmetry_class = "1",
+            constant_smiles = constant_smiles,
+            constant_with_H_smiles = constant_with_H_smiles,
+            )
 
         # up-enumeration in the constant part
         for constant_up_smiles in constant_up_enumerations:
-            yield Fragmentation(1, EnumerationLabel.CONSTANT_UP_ENUMERATION,
-                                variable_num_atoms, "1", variable_smiles,
-                                "0",
-                                constant_num_atoms, "1", constant_up_smiles, replace_wildcard_with_H(constant_up_smiles))
+            yield Fragmentation(
+                num_cuts = 1,
+                enumeration_label = EnumerationLabel.CONSTANT_UP_ENUMERATION,
+                variable_num_heavies = variable_num_atoms,
+                variable_symmetry_class = "1",
+                variable_smiles = variable_smiles,
+                attachment_order = "0",
+                constant_num_heavies = constant_num_atoms,
+                constant_symmetry_class = "1",
+                constant_smiles = constant_up_smiles,
+                constant_with_H_smiles = replace_wildcard_with_H(constant_up_smiles),
+                )
             
         # up-enumeration in the variable part
         for variable_up_smiles in variable_up_enumerations:
-            yield Fragmentation(1, EnumerationLabel.VARIABLE_UP_ENUMERATION,
-                                variable_num_atoms, "1", variable_up_smiles,
-                                "0",
-                                constant_num_atoms, "1", constant_up_smiles, constant_smiles_with_H)
+            yield Fragmentation(
+                num_cuts = 1,
+                enumeration_label = EnumerationLabel.VARIABLE_UP_ENUMERATION,
+                variable_num_heavies = variable_num_atoms,
+                variable_symmetry_class = "1",
+                variable_smiles = variable_up_smiles,
+                attachment_order = "0",
+                constant_num_heavies = constant_num_atoms,
+                constant_symmetry_class = "1",
+                constant_smiles = constant_up_smiles,
+                constant_with_H_smiles = constant_with_H_smiles,
+                )
 
 
 def _get_bonds_from_atom_pairs(mol, atom_pairs):
@@ -714,11 +709,16 @@ def make_multiple_cuts(mol, atom_pairs, chiral_flags, fragment_filter):
         ## print(get_num_heavies_from_smiles(variable_smiles), variable_symmetry_class, variable_smiles)
 
         yield Fragmentation(
-            num_cuts,
-            enumeration_label,
-            get_num_heavies_from_smiles(variable_smiles), variable_symmetry_class, variable_smiles,
-            canonical_attachment_order,
-            get_num_heavies_from_smiles(constant_smiles), constant_symmetry_class, constant_smiles, None,
+            num_cuts = num_cuts,
+            enumeration_label = enumeration_label,
+            variable_num_heavies = get_num_heavies_from_smiles(variable_smiles),
+            variable_symmetry_class = variable_symmetry_class,
+            variable_smiles = variable_smiles,
+            attachment_order = canonical_attachment_order,
+            constant_num_heavies = get_num_heavies_from_smiles(constant_smiles),
+            constant_symmetry_class = constant_symmetry_class,
+            constant_smiles = constant_smiles,
+            constant_with_H_smiles = None,
             )
     
             
@@ -793,10 +793,17 @@ def get_hydrogen_fragmentations(smiles, num_heavies):
                 continue
             seen.add(cut_smiles)
             new_fragmentation = Fragmentation(
-                1, EnumerationLabel.NO_ENUMERATION,
-                0, "1", _hydrogen_cut_smiles,
-                "0",
-                num_heavies, "1", cut_smiles, smiles)
+                num_cuts = 1,
+                enumeration_label = EnumerationLabel.NO_ENUMERATION,
+                variable_num_heavies = 0,
+                variable_symmetry_class = "1",
+                variable_smiles = _hydrogen_cut_smiles,
+                attachment_order = "0",
+                constant_num_heavies = num_heavies,
+                constant_symmetry_class = "1",
+                constant_smiles = cut_smiles,
+                constant_with_H_smiles = smiles,
+                )
             fragmentations.append(new_fragmentation)
 
         elif atom.GetNumExplicitHs() > 0:
@@ -814,10 +821,17 @@ def get_hydrogen_fragmentations(smiles, num_heavies):
                 continue
             seen.add(cut_smiles)
             new_fragmentation = Fragmentation(
-                1, EnumerationLabel.NO_ENUMERATION,
-                0, "1", _hydrogen_cut_smiles,
-                "0",
-                num_heavies, "1", cut_smiles, smiles)
+                num_cuts = 1,
+                enumeration_label = EnumerationLabel.NO_ENUMERATION,
+                variable_num_heavies = 0,
+                variable_symmetry_class = "1",
+                variable_smiles = _hydrogen_cut_smiles,
+                attachment_order = "0",
+                constant_num_heavies = num_heavies,
+                constant_symmetry_class = "1",
+                constant_smiles = cut_smiles,
+                constant_with_H_smiles = smiles,
+                )
             fragmentations.append(new_fragmentation)
 
     return fragmentations
@@ -861,11 +875,17 @@ def fragment_molecule_on_explicit_hydrogens(smiles):
             cut_smiles = Chem.CanonSmiles(cut_smiles)
 
         new_fragmentation = Fragmentation(
-            1, EnumerationLabel.NO_ENUMERATION,
-            0, "1", "[*][H]",
-            "0",
-            num_heavies, "1", cut_smiles,
-            None)
+            num_cuts = 1,
+            enumeration_label = EnumerationLabel.NO_ENUMERATION,
+            variable_num_heavies = 0,
+            variable_symmetry_class = "1",
+            variable_smiles = "[*][H]",
+            attachment_order = "0",
+            constant_num_heavies = num_heavies,
+            constant_symmetry_class = "1",
+            constant_smiles = cut_smiles,
+            constant_with_H_smiles = None,
+            )
 
         fragmentations.append(new_fragmentation)
 

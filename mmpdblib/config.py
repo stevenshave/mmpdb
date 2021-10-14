@@ -34,7 +34,6 @@ from __future__ import absolute_import
 
 #### Handle command-line arguments ####
 
-from collections import OrderedDict
 import argparse
 
 from ._compat import basestring
@@ -136,56 +135,30 @@ def parse_method_value(value):
         raise argparse.ArgumentTypeError("must be 'chiral'")
     return value
 
-
-class FragmentOptions(object):
+from . import fragment_types
+class FragmentOptions(fragment_types.FragmentOptions):
     def __init__(self, max_heavies, max_rotatable_bonds,
                  rotatable_smarts, cut_smarts, num_cuts,
                  method, salt_remover, min_heavies_per_const_frag):
         assert isinstance(max_heavies, int) or max_heavies is None, max_heavies
-        self.max_heavies = max_heavies
-
         assert isinstance(max_rotatable_bonds, int) or max_rotatable_bonds is None, max_rotatable_bonds
-        self.max_rotatable_bonds = max_rotatable_bonds
-
         assert isinstance(rotatable_smarts, str), rotatable_smarts
-        self.rotatable_smarts = rotatable_smarts
-        
         assert isinstance(cut_smarts, str), cut_smarts
-        self.cut_smarts = cut_smarts
-
         assert num_cuts in (1, 2, 3), num_cuts
-        self.num_cuts = num_cuts
-
         assert method in ("chiral",)
-        self.method = method
-
         assert isinstance(salt_remover, basestring), salt_remover
-        self.salt_remover = salt_remover
-
         assert isinstance(min_heavies_per_const_frag, int), min_heavies_per_const_frag
-        self.min_heavies_per_const_frag = min_heavies_per_const_frag
 
-    def to_dict(self):
-        d = OrderedDict()
-        for name in ("max_heavies", "max_rotatable_bonds", "rotatable_smarts",
-                     "cut_smarts", "num_cuts", "method", "salt_remover",
-                     "min_heavies_per_const_frag"):
-            d[name] = getattr(self, name)
-        return d
-    
-    def to_text_settings(self):
-        def _none(x):
-            return "none" if x is None else str(x)
-        return (
-            ("max_heavies", _none(self.max_heavies)),
-            ("max_rotatable_bonds", _none(self.max_rotatable_bonds)),
-            ("rotatable_smarts", self.rotatable_smarts),
-            ("cut_smarts", self.cut_smarts),
-            ("num_cuts", str(self.num_cuts)),
-            ("method", self.method),
-            ("salt_remover", self.salt_remover),
-            ("min_heavies_per_const_frag", str(self.min_heavies_per_const_frag))
-
+        super().__init__(
+            version = 3,
+            cut_smarts = cut_smarts,
+            max_heavies = max_heavies,
+            max_rotatable_bonds = max_rotatable_bonds,
+            method = method,
+            num_cuts = num_cuts,
+            rotatable_smarts = rotatable_smarts,
+            salt_remover = salt_remover,
+            min_heavies_per_const_frag = min_heavies_per_const_frag,
             )
 
 

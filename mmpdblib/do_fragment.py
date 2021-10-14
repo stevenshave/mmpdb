@@ -408,7 +408,7 @@ def _as_list(method, normalized_mol, fragment_filter, num_normalized_heavies):
 def make_hydrogen_fragment_record(id, input_smiles, fragment_filter):
     errmsg, record = parse_record(id, input_smiles, fragment_filter)
     if errmsg:
-        return fragment_types.FragmentErrorRecord(id, input_smiles, errmsg)
+        return fragment_types.FragmentErrorRecord(title, input_smiles, errmsg)
 
     fragments = fragment_algorithm.fragment_molecule_on_explicit_hydrogens(input_smiles)
     return fragment_types.FragmentRecord(
@@ -445,7 +445,11 @@ def make_fragment_records(smiles_reader, fragment_filter, cache=None, pool=None,
         # If I can't parse it then record the error messages
         errmsg, record = parse_record(id, input_smiles, fragment_filter)
         if errmsg:
-            result = fragment_types.FragmentErrorRecord(id, input_smiles, errmsg)
+            result = fragment_types.FragmentErrorRecord(
+                title = id,
+                input_smiles = input_smiles,
+                errmsg = errmsg,
+                )
             jobs.append( (id, input_smiles, where, None, result) )
             continue
 
@@ -472,7 +476,7 @@ def make_fragment_records(smiles_reader, fragment_filter, cache=None, pool=None,
                 continue
 
             try:
-                fragments = result.get()
+                fragmentations = result.get()
             except RuntimeError as err:
                 # Some sort of RDKit failure.
                 reporter.update("")
@@ -487,9 +491,12 @@ def make_fragment_records(smiles_reader, fragment_filter, cache=None, pool=None,
                 raise
 
             yield fragment_types.FragmentRecord(
-                id, input_smiles,
-                record.num_normalized_heavies, record.normalized_smiles,
-                fragments)
+                title = id,
+                input_smiles = input_smiles,
+                num_normalized_heavies = record.num_normalized_heavies,
+                normalized_smiles = record.normalized_smiles,
+                fragmentations = fragmentations,
+                )
 
 
 class SingleSmilesReader(object):

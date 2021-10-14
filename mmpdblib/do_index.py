@@ -166,7 +166,7 @@ def index_command(parser, args):
 
     #reporter.report("Using fragment filters: %s" % (fragment_filter.get_args(),))
 
-    fragment_io.suggest_faster_json(reporter)
+    #fragment_io.suggest_faster_json(reporter)
 
     start_fragment_index_memory = get_memory_use()
     try:
